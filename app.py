@@ -5,8 +5,8 @@ import os
 from audio_recorder_streamlit import audio_recorder
 import speech_recognition as sr
 import io
-from pydub import AudioSegment
 import tempfile
+from gtts import gTTS
 
 # Load environment variables
 load_dotenv()
@@ -230,31 +230,90 @@ st.markdown("""
     .stSpinner > div {
         border-top-color: var(--primary) !important;
     }
+
+    /* Mobile-friendly responsive styles */
+    @media (max-width: 768px) {
+        /* Reduce padding on mobile */
+        .stApp {
+            padding: 0.5rem !important;
+        }
+
+        /* Stack columns on mobile */
+        [data-testid="column"] {
+            width: 100% !important;
+            flex: 100% !important;
+        }
+
+        /* Make buttons full width on mobile */
+        .stButton > button {
+            width: 100% !important;
+            margin-bottom: 0.5rem !important;
+        }
+
+        /* Adjust text area height on mobile */
+        textarea {
+            min-height: 80px !important;
+        }
+
+        /* Reduce font sizes slightly on mobile */
+        h1 {
+            font-size: 1.75rem !important;
+        }
+
+        h2 {
+            font-size: 1.5rem !important;
+        }
+
+        h3 {
+            font-size: 1.25rem !important;
+        }
+
+        /* Make status cards stack on mobile */
+        [data-testid="stHorizontalBlock"] > div {
+            flex-direction: column !important;
+        }
+    }
+
+    /* Tablet styles */
+    @media (max-width: 1024px) and (min-width: 769px) {
+        .stApp {
+            padding: 1rem !important;
+        }
+    }
+
+    /* Improve audio player responsiveness */
+    audio {
+        max-width: 100% !important;
+        width: 100% !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Language support configuration
 LANGUAGES = {
-    "English": {"code": "en-US", "flag": "🇺🇸"},
-    "Spanish": {"code": "es-ES", "flag": "🇪🇸"},
-    "French": {"code": "fr-FR", "flag": "🇫🇷"},
-    "German": {"code": "de-DE", "flag": "🇩🇪"},
-    "Chinese (Mandarin)": {"code": "zh-CN", "flag": "🇨🇳"},
-    "Japanese": {"code": "ja-JP", "flag": "🇯🇵"},
-    "Korean": {"code": "ko-KR", "flag": "🇰🇷"},
-    "Italian": {"code": "it-IT", "flag": "🇮🇹"},
-    "Portuguese": {"code": "pt-PT", "flag": "🇵🇹"},
-    "Russian": {"code": "ru-RU", "flag": "🇷🇺"},
-    "Arabic": {"code": "ar-SA", "flag": "🇸🇦"},
-    "Hindi": {"code": "hi-IN", "flag": "🇮🇳"}
+    "English": {"code": "en-US", "flag": "🇺🇸", "tts_code": "en", "name": "English"},
+    "Spanish": {"code": "es-ES", "flag": "🇪🇸", "tts_code": "es", "name": "Spanish"},
+    "French": {"code": "fr-FR", "flag": "🇫🇷", "tts_code": "fr", "name": "French"},
+    "German": {"code": "de-DE", "flag": "🇩🇪", "tts_code": "de", "name": "German"},
+    "Chinese (Mandarin)": {"code": "zh-CN", "flag": "🇨🇳", "tts_code": "zh-CN", "name": "Chinese (Mandarin)"},
+    "Japanese": {"code": "ja-JP", "flag": "🇯🇵", "tts_code": "ja", "name": "Japanese"},
+    "Korean": {"code": "ko-KR", "flag": "🇰🇷", "tts_code": "ko", "name": "Korean"},
+    "Italian": {"code": "it-IT", "flag": "🇮🇹", "tts_code": "it", "name": "Italian"},
+    "Portuguese": {"code": "pt-PT", "flag": "🇵🇹", "tts_code": "pt", "name": "Portuguese"},
+    "Russian": {"code": "ru-RU", "flag": "🇷🇺", "tts_code": "ru", "name": "Russian"},
+    "Arabic": {"code": "ar-SA", "flag": "🇸🇦", "tts_code": "ar", "name": "Arabic"},
+    "Hindi": {"code": "hi-IN", "flag": "🇮🇳", "tts_code": "hi", "name": "Hindi"}
 }
 
 # Voice commands configuration
 VOICE_COMMANDS = {
+    # Chat control commands
     "clear chat": "clear_chat",
     "clear conversation": "clear_chat",
     "delete chat": "clear_chat",
     "erase chat": "clear_chat",
+
+    # Personality change commands
     "change personality to general": "General Assistant",
     "change personality to study": "Study Buddy",
     "change personality to fitness": "Fitness Coach",
@@ -266,7 +325,22 @@ VOICE_COMMANDS = {
     "become general assistant": "General Assistant",
     "become study buddy": "Study Buddy",
     "become fitness coach": "Fitness Coach",
-    "become gaming helper": "Gaming Helper"
+    "become gaming helper": "Gaming Helper",
+
+    # TTS speed commands
+    "speak slower": "slow_down",
+    "slow down": "slow_down",
+    "talk slower": "slow_down",
+    "speak faster": "speed_up",
+    "speed up": "speed_up",
+    "talk faster": "speed_up",
+    "normal speed": "normal_speed",
+
+    # Help command
+    "help": "show_help",
+    "show commands": "show_help",
+    "what can you do": "show_help",
+    "list commands": "show_help"
 }
 
 # Initialize session state
@@ -288,14 +362,53 @@ if "voice_activity" not in st.session_state:
 if "command_executed" not in st.session_state:
     st.session_state.command_executed = None
 
+if "tts_audio" not in st.session_state:
+    st.session_state.tts_audio = {}
+
+if "processing" not in st.session_state:
+    st.session_state.processing = False
+
+if "last_audio_bytes" not in st.session_state:
+    st.session_state.last_audio_bytes = None
+
+if "tts_speed_slow" not in st.session_state:
+    st.session_state.tts_speed_slow = False  # Normal speed by default
+
 # Cache the model creation for faster performance
 @st.cache_resource
-def get_ai_model(personality):
-    """Create and cache the AI model for the given personality"""
+def get_ai_model(personality, language):
+    """Create and cache the AI model for the given personality and language"""
+    # Get the base system prompt
+    base_prompt = PERSONALITIES[personality]["system_prompt"]
+
+    # Add language instruction if not English
+    if language != "English":
+        language_name = LANGUAGES[language]["name"]
+        language_instruction = f"\n\nIMPORTANT: Please respond in {language_name}. The user will communicate in {language_name}, and you should respond entirely in {language_name}."
+        system_prompt = base_prompt + language_instruction
+    else:
+        system_prompt = base_prompt
+
     return genai.GenerativeModel(
         'gemini-2.5-flash',
-        system_instruction=PERSONALITIES[personality]["system_prompt"]
+        system_instruction=system_prompt
     )
+
+def generate_tts_audio(text, language="en", slow=False):
+    """Generate TTS audio from text using gTTS"""
+    try:
+        # Create TTS object with speed control
+        tts = gTTS(text=text, lang=language, slow=slow)
+
+        # Save to bytes buffer
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+
+        return audio_buffer.read()
+    except Exception as e:
+        st.error(f"TTS Error: {str(e)}")
+        return None
 
 # Sidebar
 with st.sidebar:
@@ -340,36 +453,60 @@ with st.sidebar:
     selected_lang = selected_lang_display.split(" ", 1)[1]
     if selected_lang != st.session_state.selected_language:
         st.session_state.selected_language = selected_lang
+        # Clear the cached model so it regenerates with new language instruction
+        get_ai_model.clear()
         st.success(f"Language changed to {LANGUAGES[selected_lang]['flag']} {selected_lang}")
         st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🎙️ Voice Tips")
-    st.markdown("""
-    **Recording:**
-    - Click mic to start
-    - Red = recording
-    - Click again to stop
 
-    **Speaking:**
-    - Speak slowly for best results
-    - Normal conversational volume
-    - Pause 1 second after speaking
+    # Voice Settings in an expandable section
+    with st.expander("🎙️ Voice Settings & Tips", expanded=False):
+        st.markdown("""
+        **📝 How to Use Voice Input:**
+        1. Click the microphone button 🎤
+        2. Wait for the red indicator
+        3. Speak clearly and naturally
+        4. Click again to stop recording
 
-    **Voice Commands:**
-    - "Clear chat" - Erase conversation
-    - "Change personality to [name]" - Switch AI mode
-    - "Switch to gaming" - Quick personality change
-    """)
+        **🎯 Best Practices:**
+        - Speak at a normal conversational pace
+        - Position yourself 6-12 inches from microphone
+        - Minimize background noise
+        - Pause 1 second after finishing
+
+        **🎮 Voice Commands:**
+        - "Clear chat" - Erase conversation
+        - "Change personality to [name]" - Switch AI mode
+        - "Switch to gaming" - Quick personality change
+
+        **⚠️ Troubleshooting:**
+        - If recognition fails, try speaking slower
+        - Check your language selection matches what you're speaking
+        - Ensure microphone permissions are enabled
+        - Reduce background noise for better accuracy
+        """)
 
     st.markdown("---")
     # Clear chat button
     if st.button("Clear Chat History", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.tts_audio = {}
         st.rerun()
 
 # Main chat interface
 st.title(f"💬 AI Voice Assistant")
+
+# Helpful info box for first-time users
+if len(st.session_state.messages) == 0:
+    st.info("""
+    👋 **Welcome to AI Voice Assistant!**
+
+    - 💬 **Type** your message below or 🎤 **speak** using the microphone button
+    - 🔊 **Listen** to AI responses with text-to-speech audio players
+    - 🎮 **Try voice commands** like "clear chat" or "switch to gaming"
+    - ⚙️ **Customize** personality and language in the sidebar
+    """)
 
 # Enhanced status bar with language and personality
 status_col1, status_col2 = st.columns(2)
@@ -440,6 +577,48 @@ with chat_container:
                 </div>
                 """, unsafe_allow_html=True)
 
+                # Display audio player OUTSIDE chat message container
+                message_key = f"msg_{idx}"
+
+                # Add visual separator between message and audio
+                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+                if message_key in st.session_state.tts_audio:
+                    # Audio already generated - display it
+                    audio_col1, audio_col2 = st.columns([1, 10])
+                    with audio_col1:
+                        st.markdown("🔊")
+                    with audio_col2:
+                        st.audio(st.session_state.tts_audio[message_key], format="audio/mp3")
+                elif not st.session_state.processing:
+                    # Generate TTS audio if not already generated
+                    message_length = len(message["content"])
+
+                    # Warn for very long messages
+                    if message_length > 500:
+                        st.info(f"📝 Long message ({message_length} chars) - audio generation may take a moment...")
+
+                    with st.spinner("🎵 Generating audio..."):
+                        try:
+                            # Get proper TTS language code from LANGUAGES configuration
+                            tts_lang = LANGUAGES[st.session_state.selected_language]["tts_code"]
+
+                            # Truncate extremely long messages for TTS (optional)
+                            tts_text = message["content"]
+                            if message_length > 1000:
+                                tts_text = message["content"][:1000] + "..."
+                                st.warning("⚠️ Message truncated to 1000 characters for audio")
+
+                            audio_bytes = generate_tts_audio(tts_text, language=tts_lang, slow=st.session_state.tts_speed_slow)
+
+                            if audio_bytes:
+                                st.session_state.tts_audio[message_key] = audio_bytes
+                                st.rerun()
+                            else:
+                                st.error("❌ Audio generation failed. Please refresh or try again.")
+                        except Exception as e:
+                            st.error(f"❌ TTS Error: {str(e)}")
+
 st.markdown("---")
 
 # Input section at the bottom - always visible
@@ -457,25 +636,32 @@ with st.expander("✨ Available Voice Commands", expanded=False):
             <strong style="color: #5B21B6;">💬 Chat Control:</strong>
             <ul style="color: #1E293B; margin-top: 0.5rem;">
                 <li>"Clear chat" - Erase entire conversation</li>
-                <li>"Clear conversation" - Same as above</li>
-                <li>"Delete chat" - Remove all messages</li>
+                <li>"Help" - Show all available commands</li>
             </ul>
         </div>
 
         <div style="margin-top: 1rem;">
             <strong style="color: #5B21B6;">🎭 Personality Switching:</strong>
             <ul style="color: #1E293B; margin-top: 0.5rem;">
-                <li>"Change personality to general" - Switch to General Assistant</li>
-                <li>"Switch to study" - Activate Study Buddy</li>
-                <li>"Switch to fitness" - Activate Fitness Coach</li>
-                <li>"Switch to gaming" - Activate Gaming Helper</li>
-                <li>"Become [personality name]" - Quick switch</li>
+                <li>"Switch to general" - General Assistant</li>
+                <li>"Switch to study" - Study Buddy</li>
+                <li>"Switch to fitness" - Fitness Coach</li>
+                <li>"Switch to gaming" - Gaming Helper</li>
+            </ul>
+        </div>
+
+        <div style="margin-top: 1rem;">
+            <strong style="color: #5B21B6;">🔊 Speech Control:</strong>
+            <ul style="color: #1E293B; margin-top: 0.5rem;">
+                <li>"Speak slower" - Slow down text-to-speech</li>
+                <li>"Speak faster" - Return to normal speed</li>
+                <li>"Normal speed" - Reset speech speed</li>
             </ul>
         </div>
 
         <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(124, 58, 237, 0.1); border-radius: 8px;">
             <strong style="color: #7C3AED;">💡 Pro Tip:</strong>
-            <span style="color: #1E293B;"> Commands work in any language! Just say them naturally in your selected language.</span>
+            <span style="color: #1E293B;"> Commands work in any language! Just say them naturally. Say "Help" to see all commands.</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -559,179 +745,156 @@ if audio_bytes:
                     tmp_file.write(audio_bytes)
                     tmp_file_path = tmp_file.name
 
-                # Load and process the audio using pydub
-                audio = AudioSegment.from_file(tmp_file_path)
-
-                # Voice Activity Detection - analyze audio levels
-                audio_level = audio.dBFS
-                st.session_state.voice_activity = audio_level > -40
-
-                # Visual feedback for voice activity detection
-                if audio_level > -40:
-                    activity_color = "#10B981"  # Green - speech detected
-                    activity_text = "🟢 Speech Detected"
-                elif audio_level > -50:
-                    activity_color = "#F59E0B"  # Amber - weak signal
-                    activity_text = "🟡 Weak Signal"
-                else:
-                    activity_color = "#EF4444"  # Red - no speech
-                    activity_text = "🔴 No Speech Detected"
-
-                st.markdown(f"""
+                # Simple status indicator
+                st.markdown("""
                 <div style="text-align: center; padding: 0.5rem; margin-bottom: 0.5rem;
                             background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.2));
-                            border-radius: 8px; border: 2px solid {activity_color};">
-                    <span style="color: {activity_color}; font-weight: bold;">{activity_text}</span>
-                    <div style="width: 100%; height: 8px; background: #E5E7EB; border-radius: 4px; margin-top: 0.5rem; overflow: hidden;">
-                        <div style="width: {min(100, max(0, (audio_level + 60) * 2))}%; height: 100%;
-                                    background: linear-gradient(90deg, {activity_color}, {activity_color});
-                                    transition: width 0.3s ease;"></div>
-                    </div>
+                            border-radius: 8px; border: 2px solid #10B981;">
+                    <span style="color: #10B981; font-weight: bold;">🟢 Audio Captured - Processing...</span>
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Check if audio is mostly silence
-                if audio.dBFS < -50:  # Very quiet audio
-                    st.markdown("""
-                    <div style="background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
-                                border-left: 5px solid #F59E0B;
+                # Use speech recognition
+                recognizer = sr.Recognizer()
+
+                # BALANCED settings - sensitive but more accurate
+                recognizer.energy_threshold = 300  # Balanced - not too sensitive to avoid noise
+                recognizer.dynamic_energy_threshold = True  # Enable dynamic adjustment for better accuracy
+                recognizer.dynamic_energy_adjustment_damping = 0.15
+                recognizer.dynamic_energy_ratio = 1.5
+                recognizer.pause_threshold = 0.8  # Allow pauses for natural speech
+                recognizer.phrase_threshold = 0.3  # Require some speaking duration to filter noise
+                recognizer.non_speaking_duration = 0.5  # Slightly longer to avoid cutting off
+
+                # Load the audio file directly from temp file
+                with sr.AudioFile(tmp_file_path) as source:
+                    # Adjust for ambient noise to improve accuracy
+                    recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                    audio_data = recognizer.record(source)
+
+                # Use Google Speech Recognition with selected language
+                language_code = LANGUAGES[st.session_state.selected_language]["code"]
+
+                # DEBUG: Show what we're sending to Google
+                st.info(f"🔍 Sending to Google Speech API with language: {language_code}")
+
+                try:
+                    # Use Google's advanced recognition with better accuracy
+                    # show_all=True gives us confidence scores
+                    result = recognizer.recognize_google(
+                        audio_data,
+                        language=language_code,
+                        show_all=True
+                    )
+
+                    # Get the best (highest confidence) transcription
+                    if result and len(result) > 0:
+                        # Google returns alternatives sorted by confidence
+                        text = result[0]['transcript']
+                        st.success(f"✅ Google recognized: {text}")
+                    else:
+                        raise sr.UnknownValueError()
+
+                except (sr.UnknownValueError, KeyError, IndexError):
+                    # Try again with English as fallback
+                    st.warning("⚠️ First attempt failed, trying with English...")
+                    result = recognizer.recognize_google(
+                        audio_data,
+                        language="en-US",
+                        show_all=True
+                    )
+                    if result and len(result) > 0:
+                        text = result[0]['transcript']
+                    else:
+                        raise sr.UnknownValueError()
+
+                # Check for voice commands (case-insensitive)
+                text_lower = text.lower().strip()
+                command_executed = False
+
+                for command, action in VOICE_COMMANDS.items():
+                    if command in text_lower:
+                        if action == "clear_chat":
+                            # Clear chat command
+                            st.session_state.messages = []
+                            st.session_state.tts_audio = {}
+                            st.session_state.command_executed = "Voice Command: Chat Cleared! 🗑️"
+                            st.session_state.voice_text = ""
+                            command_executed = True
+                            st.rerun()
+                        elif action == "slow_down":
+                            # Slow down TTS speed
+                            st.session_state.tts_speed_slow = True
+                            st.session_state.command_executed = "Voice Command: Speech slowed down 🐢"
+                            st.session_state.voice_text = ""
+                            command_executed = True
+                            st.rerun()
+                        elif action == "speed_up" or action == "normal_speed":
+                            # Speed up TTS (back to normal)
+                            st.session_state.tts_speed_slow = False
+                            st.session_state.command_executed = "Voice Command: Speech speed normal 🚀"
+                            st.session_state.voice_text = ""
+                            command_executed = True
+                            st.rerun()
+                        elif action == "show_help":
+                            # Show help - add helpful message to chat
+                            help_message = """**Available Voice Commands:**
+
+**Chat Control:**
+- "Clear chat" - Erase conversation
+- "Help" - Show this help message
+
+**Personality:**
+- "Switch to gaming" - Change to Gaming Helper
+- "Switch to study" - Change to Study Buddy
+- "Switch to fitness" - Change to Fitness Coach
+- "Switch to general" - Change to General Assistant
+
+**Speech Control:**
+- "Speak slower" - Slow down text-to-speech
+- "Speak faster" - Return to normal speed
+
+Try saying any of these commands naturally!"""
+                            st.session_state.messages.append({"role": "assistant", "content": help_message})
+                            st.session_state.command_executed = "Voice Command: Help displayed! 💡"
+                            st.session_state.voice_text = ""
+                            command_executed = True
+                            st.rerun()
+                        elif action in PERSONALITIES:
+                            # Change personality command
+                            old_personality = st.session_state.personality
+                            st.session_state.personality = action
+                            st.session_state.command_executed = f"Voice Command: Switched from {old_personality} to {action}! 🎭"
+                            st.session_state.voice_text = ""
+                            command_executed = True
+                            st.rerun()
+                        break
+
+                if not command_executed:
+                    st.session_state.voice_text = text
+
+                    # Show success message with transcription
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 100%);
+                                border-left: 5px solid #10B981;
                                 border-radius: 12px;
                                 padding: 1rem;
                                 margin-top: 1rem;">
-                        <div style="color: #D97706; font-weight: bold; font-size: 1.1rem;">
-                            🔇 Recording too quiet
+                        <div style="color: #10B981; font-weight: bold; font-size: 1.1rem;">
+                            ✅ Ready! Transcription complete ({lang_flag} {current_lang})
                         </div>
                         <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                            No speech detected in your recording. Please try again and speak louder.
+                            <strong>You said:</strong> {text}
                         </div>
                         <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                            💡 Tip: Use your normal speaking voice, 6-12 inches from the mic
+                            💡 Edit the text below if needed, then click Send
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
-                    if tmp_file_path:
-                        os.unlink(tmp_file_path)
-                else:
-                    # Convert to mono first for better processing
-                    audio = audio.set_channels(1)
 
-                    # AGGRESSIVE noise reduction for background sounds
-                    # High-pass filter - removes low frequency background noise (rumble, hum)
-                    audio = audio.high_pass_filter(300)  # Increased from 200 to 300 Hz
-
-                    # Low-pass filter - removes high frequency hiss and static
-                    audio = audio.low_pass_filter(3000)  # Human voice is typically 300-3000 Hz
-
-                    # Compress dynamic range to focus on nearby sounds
-                    # This makes quiet sounds quieter and loud sounds more prominent
-                    from pydub.effects import compress_dynamic_range
-                    audio = compress_dynamic_range(audio, threshold=-20.0, ratio=4.0, attack=5.0)
-
-                    # Normalize to bring speech to optimal level
-                    audio = audio.normalize()
-
-                    # Apply noise gate - only pass audio above certain threshold
-                    # This cuts out background noise when you're not speaking
-                    def noise_gate(audio_segment, threshold=-35.0):
-                        """Apply noise gate to remove quiet background noise"""
-                        # Split into chunks
-                        chunks = audio_segment[::50]  # 50ms chunks
-                        output = AudioSegment.empty()
-
-                        for chunk in chunks:
-                            if chunk.dBFS > threshold:
-                                output += chunk
-                            else:
-                                # Replace quiet parts with silence
-                                output += AudioSegment.silent(duration=len(chunk))
-                        return output
-
-                    audio = noise_gate(audio, threshold=-35.0)
-
-                    # Boost volume slightly for clear speech
-                    audio = audio + 6  # Reduced from 10 to 6 dB
-
-                    # Set optimal sample rate for speech recognition
-                    audio = audio.set_frame_rate(16000)
-
-                    # Export processed audio to WAV format
-                    processed_wav = io.BytesIO()
-                    audio.export(processed_wav, format="wav")
-                    processed_wav.seek(0)
-
-                    # Use speech recognition
-                    recognizer = sr.Recognizer()
-
-                    # Stricter settings to ignore background noise
-                    recognizer.energy_threshold = 400  # Increased from 50 - less sensitive to quiet sounds
-                    recognizer.dynamic_energy_threshold = True
-                    recognizer.dynamic_energy_adjustment_damping = 0.25  # Slower adaptation to noise
-                    recognizer.dynamic_energy_ratio = 2.0  # More aggressive noise filtering
-                    recognizer.pause_threshold = 0.6  # Slightly longer pauses
-                    recognizer.phrase_threshold = 0.5  # Require more speaking time
-
-                    # Load the audio file
-                    with sr.AudioFile(processed_wav) as source:
-                        # More aggressive ambient noise adjustment
-                        recognizer.adjust_for_ambient_noise(source, duration=0.5)  # Increased from 0.2
-                        audio_data = recognizer.record(source)
-
-                    # Use Google Speech Recognition with selected language
-                    language_code = LANGUAGES[st.session_state.selected_language]["code"]
-                    text = recognizer.recognize_google(
-                        audio_data,
-                        language=language_code,
-                        show_all=False
-                    )
-
-                    # Check for voice commands (case-insensitive)
-                    text_lower = text.lower().strip()
-                    command_executed = False
-
-                    for command, action in VOICE_COMMANDS.items():
-                        if command in text_lower:
-                            if action == "clear_chat":
-                                # Clear chat command
-                                st.session_state.messages = []
-                                st.session_state.command_executed = "Voice Command: Chat Cleared! 🗑️"
-                                st.session_state.voice_text = ""
-                                command_executed = True
-                                st.rerun()
-                            elif action in PERSONALITIES:
-                                # Change personality command
-                                old_personality = st.session_state.personality
-                                st.session_state.personality = action
-                                st.session_state.command_executed = f"Voice Command: Switched from {old_personality} to {action}! 🎭"
-                                st.session_state.voice_text = ""
-                                command_executed = True
-                                st.rerun()
-                            break
-
-                    if not command_executed:
-                        st.session_state.voice_text = text
-
-                        # Show success message with transcription
-                        st.markdown(f"""
-                        <div style="background: linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 100%);
-                                    border-left: 5px solid #10B981;
-                                    border-radius: 12px;
-                                    padding: 1rem;
-                                    margin-top: 1rem;">
-                            <div style="color: #10B981; font-weight: bold; font-size: 1.1rem;">
-                                ✅ Ready! Transcription complete ({lang_flag} {current_lang})
-                            </div>
-                            <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                                <strong>You said:</strong> {text}
-                            </div>
-                            <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                                💡 Edit the text below if needed, then click Send
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                    # Clean up temp file
-                    if tmp_file_path:
-                        os.unlink(tmp_file_path)
+                # Clean up temp file
+                if tmp_file_path:
+                    os.unlink(tmp_file_path)
 
     except sr.UnknownValueError:
         # Could not understand the audio - friendly message
@@ -836,11 +999,12 @@ user_input = st.text_area(
     height=100,
     placeholder="✍️ Type your message or use voice input above...",
     key="text_input_area",
-    label_visibility="collapsed"
+    label_visibility="collapsed",
+    help="Type your message here or use the microphone button above for voice input"
 )
 
-# Send button
-send_col1, send_col2 = st.columns([4, 1])
+# Send button with better mobile layout
+send_col1, send_col2, send_col3 = st.columns([3, 3, 1])
 with send_col1:
     if st.button("📤 Send Message", type="primary", use_container_width=True, key="send_btn"):
         if user_input and user_input.strip():
@@ -863,14 +1027,17 @@ with send_col2:
         st.rerun()
 
 # Check if last message needs AI response
-if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
+if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user" and not st.session_state.processing:
+    # Set processing flag to prevent duplicate processing
+    st.session_state.processing = True
+
     with st.spinner("🤖 Thinking..."):
         try:
             # Get the last user message
             prompt = st.session_state.messages[-1]["content"]
 
-            # Get cached model for current personality
-            model = get_ai_model(st.session_state.personality)
+            # Get cached model for current personality and language
+            model = get_ai_model(st.session_state.personality, st.session_state.selected_language)
 
             # Generate response
             response = model.generate_content(prompt)
@@ -879,12 +1046,19 @@ if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] 
             # Add assistant response to chat history
             st.session_state.messages.append({"role": "assistant", "content": full_response})
 
+            # Reset processing flag
+            st.session_state.processing = False
+
             # Rerun to display the response
             st.rerun()
 
         except Exception as e:
             error_message = f"❌ Error: {str(e)}"
             st.session_state.messages.append({"role": "assistant", "content": error_message})
+
+            # Reset processing flag
+            st.session_state.processing = False
+
             st.rerun()
 
 # Auto-scroll to bottom using JavaScript
