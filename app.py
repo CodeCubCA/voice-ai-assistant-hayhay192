@@ -374,6 +374,7 @@ if "last_audio_bytes" not in st.session_state:
 if "tts_speed_slow" not in st.session_state:
     st.session_state.tts_speed_slow = False  # Normal speed by default
 
+
 # Cache the model creation for faster performance
 @st.cache_resource
 def get_ai_model(personality, language):
@@ -677,7 +678,8 @@ with voice_col2:
         neutral_color="#3498db",     # Blue when ready
         icon_name="microphone",
         icon_size="2x",
-        sample_rate=16000
+        sample_rate=16000,
+        key="audio_recorder"
     )
 
 # Status indicator - compact with language info
@@ -715,130 +717,56 @@ if st.session_state.command_executed:
     """, unsafe_allow_html=True)
     st.session_state.command_executed = None
 
-# Process audio if recorded
+# VOICE PROCESSING - Completely rewritten
+# Process new audio recordings
 if audio_bytes:
-    tmp_file_path = None
-    try:
-        # Check if audio is too short (likely empty/silent)
-        if len(audio_bytes) < 1000:  # Less than 1KB is likely just silence
-            st.markdown("""
-            <div style="background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
-                        border-left: 5px solid #F59E0B;
-                        border-radius: 12px;
-                        padding: 1rem;
-                        margin-top: 1rem;">
-                <div style="color: #D97706; font-weight: bold; font-size: 1.1rem;">
-                    🔇 No speech detected
-                </div>
-                <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                    Your recording was too short or silent. Please try again and speak clearly.
-                </div>
-                <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                    💡 Tip: Speak for at least 1-2 seconds
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+    # Check if this is new audio by comparing to last processed
+    if "last_audio_hash" not in st.session_state:
+        st.session_state.last_audio_hash = None
+
+    # Create hash of current audio to detect new recordings
+    import hashlib
+    current_hash = hashlib.md5(audio_bytes).hexdigest()
+
+    # Only process if this is a new recording
+    if current_hash != st.session_state.last_audio_hash:
+        st.session_state.last_audio_hash = current_hash
+
+        if len(audio_bytes) < 100:
+            st.warning("🔇 Recording too short. Please speak for at least 1 second.")
         else:
-            with st.spinner("🎧 Processing and converting speech to text..."):
-                # Create a temporary WAV file from the audio bytes
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                    tmp_file.write(audio_bytes)
-                    tmp_file_path = tmp_file.name
-
-                # Simple status indicator
-                st.markdown("""
-                <div style="text-align: center; padding: 0.5rem; margin-bottom: 0.5rem;
-                            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.2));
-                            border-radius: 8px; border: 2px solid #10B981;">
-                    <span style="color: #10B981; font-weight: bold;">🟢 Audio Captured - Processing...</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # Use speech recognition
-                recognizer = sr.Recognizer()
-
-                # BALANCED settings - sensitive but more accurate
-                recognizer.energy_threshold = 300  # Balanced - not too sensitive to avoid noise
-                recognizer.dynamic_energy_threshold = True  # Enable dynamic adjustment for better accuracy
-                recognizer.dynamic_energy_adjustment_damping = 0.15
-                recognizer.dynamic_energy_ratio = 1.5
-                recognizer.pause_threshold = 0.8  # Allow pauses for natural speech
-                recognizer.phrase_threshold = 0.3  # Require some speaking duration to filter noise
-                recognizer.non_speaking_duration = 0.5  # Slightly longer to avoid cutting off
-
-                # Load the audio file directly from temp file
-                with sr.AudioFile(tmp_file_path) as source:
-                    # Adjust for ambient noise to improve accuracy
-                    recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                    audio_data = recognizer.record(source)
-
-                # Use Google Speech Recognition with selected language
-                language_code = LANGUAGES[st.session_state.selected_language]["code"]
-
-                # DEBUG: Show what we're sending to Google
-                st.info(f"🔍 Sending to Google Speech API with language: {language_code}")
-
+            with st.spinner("🎧 Converting speech to text..."):
                 try:
-                    # Use Google's advanced recognition with better accuracy
-                    # show_all=True gives us confidence scores
-                    result = recognizer.recognize_google(
-                        audio_data,
-                        language=language_code,
-                        show_all=True
-                    )
+                    recognizer = sr.Recognizer()
+                    wav_io = io.BytesIO(audio_bytes)
 
-                    # Get the best (highest confidence) transcription
-                    if result and len(result) > 0:
-                        # Google returns alternatives sorted by confidence
-                        text = result[0]['transcript']
-                        st.success(f"✅ Google recognized: {text}")
-                    else:
-                        raise sr.UnknownValueError()
+                    with sr.AudioFile(wav_io) as source:
+                        audio_data = recognizer.record(source)
 
-                except (sr.UnknownValueError, KeyError, IndexError):
-                    # Try again with English as fallback
-                    st.warning("⚠️ First attempt failed, trying with English...")
-                    result = recognizer.recognize_google(
-                        audio_data,
-                        language="en-US",
-                        show_all=True
-                    )
-                    if result and len(result) > 0:
-                        text = result[0]['transcript']
-                    else:
-                        raise sr.UnknownValueError()
+                    language_code = LANGUAGES[st.session_state.selected_language]["code"]
+                    text = recognizer.recognize_google(audio_data, language=language_code)
 
-                # Check for voice commands (case-insensitive)
-                text_lower = text.lower().strip()
-                command_executed = False
+                    # Check for voice commands
+                    text_lower = text.lower().strip()
+                    command_executed = False
 
-                for command, action in VOICE_COMMANDS.items():
-                    if command in text_lower:
-                        if action == "clear_chat":
-                            # Clear chat command
-                            st.session_state.messages = []
-                            st.session_state.tts_audio = {}
-                            st.session_state.command_executed = "Voice Command: Chat Cleared! 🗑️"
-                            st.session_state.voice_text = ""
-                            command_executed = True
-                            st.rerun()
-                        elif action == "slow_down":
-                            # Slow down TTS speed
-                            st.session_state.tts_speed_slow = True
-                            st.session_state.command_executed = "Voice Command: Speech slowed down 🐢"
-                            st.session_state.voice_text = ""
-                            command_executed = True
-                            st.rerun()
-                        elif action == "speed_up" or action == "normal_speed":
-                            # Speed up TTS (back to normal)
-                            st.session_state.tts_speed_slow = False
-                            st.session_state.command_executed = "Voice Command: Speech speed normal 🚀"
-                            st.session_state.voice_text = ""
-                            command_executed = True
-                            st.rerun()
-                        elif action == "show_help":
-                            # Show help - add helpful message to chat
-                            help_message = """**Available Voice Commands:**
+                    for command, action in VOICE_COMMANDS.items():
+                        if command in text_lower:
+                            if action == "clear_chat":
+                                st.session_state.messages = []
+                                st.session_state.tts_audio = {}
+                                st.session_state.command_executed = "Voice Command: Chat Cleared! 🗑️"
+                                command_executed = True
+                            elif action == "slow_down":
+                                st.session_state.tts_speed_slow = True
+                                st.session_state.command_executed = "Voice Command: Speech slowed down 🐢"
+                                command_executed = True
+                            elif action == "speed_up" or action == "normal_speed":
+                                st.session_state.tts_speed_slow = False
+                                st.session_state.command_executed = "Voice Command: Speech speed normal 🚀"
+                                command_executed = True
+                            elif action == "show_help":
+                                help_message = """**Available Voice Commands:**
 
 **Chat Control:**
 - "Clear chat" - Erase conversation
@@ -855,147 +783,35 @@ if audio_bytes:
 - "Speak faster" - Return to normal speed
 
 Try saying any of these commands naturally!"""
-                            st.session_state.messages.append({"role": "assistant", "content": help_message})
-                            st.session_state.command_executed = "Voice Command: Help displayed! 💡"
-                            st.session_state.voice_text = ""
-                            command_executed = True
-                            st.rerun()
-                        elif action in PERSONALITIES:
-                            # Change personality command
-                            old_personality = st.session_state.personality
-                            st.session_state.personality = action
-                            st.session_state.command_executed = f"Voice Command: Switched from {old_personality} to {action}! 🎭"
-                            st.session_state.voice_text = ""
-                            command_executed = True
-                            st.rerun()
-                        break
+                                st.session_state.messages.append({"role": "assistant", "content": help_message})
+                                st.session_state.command_executed = "Voice Command: Help displayed! 💡"
+                                command_executed = True
+                            elif action in PERSONALITIES:
+                                old_personality = st.session_state.personality
+                                st.session_state.personality = action
+                                st.session_state.command_executed = f"Voice Command: Switched from {old_personality} to {action}! 🎭"
+                                command_executed = True
+                            break
 
-                if not command_executed:
-                    st.session_state.voice_text = text
+                    # If no command, set voice text and force update
+                    if not command_executed:
+                        st.session_state.voice_text = text
+                        st.success(f"✅ Voice recognized: \"{text}\"")
+                    else:
+                        st.session_state.voice_text = ""
+                        st.rerun()
 
-                    # Show success message with transcription
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 100%);
-                                border-left: 5px solid #10B981;
-                                border-radius: 12px;
-                                padding: 1rem;
-                                margin-top: 1rem;">
-                        <div style="color: #10B981; font-weight: bold; font-size: 1.1rem;">
-                            ✅ Ready! Transcription complete ({lang_flag} {current_lang})
-                        </div>
-                        <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                            <strong>You said:</strong> {text}
-                        </div>
-                        <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                            💡 Edit the text below if needed, then click Send
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                except sr.UnknownValueError:
+                    st.error("🤔 Could not understand the audio. Please speak clearly and try again.")
+                except sr.RequestError as e:
+                    st.error(f"🌐 Could not connect to speech recognition service: {str(e)}")
+                except Exception as e:
+                    st.error(f"⚠️ Error processing audio: {str(e)}")
 
-                # Clean up temp file
-                if tmp_file_path:
-                    os.unlink(tmp_file_path)
-
-    except sr.UnknownValueError:
-        # Could not understand the audio - friendly message
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
-                    border-left: 5px solid #F59E0B;
-                    border-radius: 12px;
-                    padding: 1rem;
-                    margin-top: 1rem;">
-            <div style="color: #D97706; font-weight: bold; font-size: 1.1rem;">
-                🤔 Could not understand your speech
-            </div>
-            <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                The audio was unclear. Please try again!
-            </div>
-            <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                💡 Tips: Speak slowly and clearly, reduce background noise, stay close to mic
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        if tmp_file_path:
-            os.unlink(tmp_file_path)
-
-    except sr.RequestError as e:
-        # Network/API error - check if it's a permission issue
-        error_str = str(e).lower()
-        if "permission" in error_str or "access" in error_str or "denied" in error_str:
-            st.markdown("""
-            <div style="background: linear-gradient(135deg, #FEE2E2 0%, #FECACA 100%);
-                        border-left: 5px solid #EF4444;
-                        border-radius: 12px;
-                        padding: 1rem;
-                        margin-top: 1rem;">
-                <div style="color: #DC2626; font-weight: bold; font-size: 1.1rem;">
-                    🎤 Microphone access needed
-                </div>
-                <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                    Please allow microphone access in your browser settings.
-                </div>
-                <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                    💡 Look for the microphone icon in your browser's address bar and click "Allow"
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Add retry button
-            if st.button("🔄 Retry with microphone access", type="secondary", use_container_width=True):
-                st.rerun()
-        else:
-            # Network error
-            st.markdown("""
-            <div style="background: linear-gradient(135deg, #FEE2E2 0%, #FECACA 100%);
-                        border-left: 5px solid #EF4444;
-                        border-radius: 12px;
-                        padding: 1rem;
-                        margin-top: 1rem;">
-                <div style="color: #DC2626; font-weight: bold; font-size: 1.1rem;">
-                    🌐 Connection issue
-                </div>
-                <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                    Could not connect to the speech recognition service. Please check your internet connection.
-                </div>
-                <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                    💡 Try again in a moment
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        if tmp_file_path:
-            os.unlink(tmp_file_path)
-
-    except Exception as e:
-        # Generic error - don't crash, just show friendly message
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
-                    border-left: 5px solid #F59E0B;
-                    border-radius: 12px;
-                    padding: 1rem;
-                    margin-top: 1rem;">
-            <div style="color: #D97706; font-weight: bold; font-size: 1.1rem;">
-                ⚠️ Something went wrong
-            </div>
-            <div style="color: #1E293B; margin-top: 0.5rem; font-size: 0.95rem;">
-                There was an issue processing your recording. Please try recording again.
-            </div>
-            <div style="color: #64748B; margin-top: 0.5rem; font-size: 0.85rem;">
-                💡 If the problem persists, try refreshing the page
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        if tmp_file_path:
-            os.unlink(tmp_file_path)
-
-
-# Text input section with voice text pre-populated
-# Initialize text input in session state if voice text exists
-if st.session_state.voice_text and "user_input_text" not in st.session_state:
-    st.session_state.user_input_text = st.session_state.voice_text
-
+# Text input - use voice_text directly
 user_input = st.text_area(
     "Message",
-    value=st.session_state.get("user_input_text", st.session_state.voice_text),
+    value=st.session_state.voice_text,
     height=100,
     placeholder="✍️ Type your message or use voice input above...",
     key="text_input_area",
@@ -1013,9 +829,9 @@ with send_col1:
             # Add user message to chat history
             st.session_state.messages.append({"role": "user", "content": prompt})
 
-            # Clear inputs immediately
+            # Clear inputs and reset audio tracking
             st.session_state.voice_text = ""
-            st.session_state.user_input_text = ""
+            st.session_state.last_audio_hash = None
 
             # Rerun to show user message immediately
             st.rerun()
@@ -1023,7 +839,7 @@ with send_col1:
 with send_col2:
     if st.button("🗑️ Clear", use_container_width=True):
         st.session_state.voice_text = ""
-        st.session_state.user_input_text = ""
+        st.session_state.last_audio_hash = None
         st.rerun()
 
 # Check if last message needs AI response
