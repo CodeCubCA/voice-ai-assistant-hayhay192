@@ -78,6 +78,14 @@ Comprehensive language support for both input and output:
 - **Smart Processing**: Asynchronous operations and state management
 - **Minimal Latency**: Streamlined message flow
 
+## 🌐 Live Demo
+
+Try the live version of the Voice AI Assistant deployed on Render:
+
+**🎤 [Live Demo on Render](https://voice-ai-assistant-hayhay192.onrender.com/)**
+
+*Note: The app may take 30-60 seconds to wake up if it hasn't been used recently (free tier limitation).*
+
 ## 📋 Requirements
 
 - Python 3.8 or higher
@@ -312,6 +320,30 @@ Built to demonstrate the power of combining modern AI with intuitive voice inter
 - **Issues**: [GitHub Issues](https://github.com/CodeCubCA/voice-ai-assistant-hayhay192/issues)
 - **Discussions**: Open a GitHub Discussion
 - **Documentation**: This README and inline code comments
+
+## 🚢 Deployment
+
+### Deploy to Render
+
+1. Fork this repository
+2. Create a new Web Service on [Render](https://render.com)
+3. Connect your forked repository
+4. Configure the service:
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `streamlit run app.py --server.port=$PORT --server.address=0.0.0.0`
+5. Add environment variable:
+   - **Key**: `GEMINI_API_KEY`
+   - **Value**: Your Google Gemini API key
+6. Deploy!
+
+### Deploy to Streamlit Cloud
+
+1. Push your code to GitHub
+2. Go to [Streamlit Cloud](https://streamlit.io/cloud)
+3. Click "New app"
+4. Select your repository and branch
+5. Add your `GEMINI_API_KEY` in the Secrets section
+6. Deploy!
 
 ## 🔮 Future Enhancements
 
